@@ -88,14 +88,14 @@ func namedReturn3() (err error) { // want `func namedReturn3 #0: \[nil\]`
 	return
 }
 
-func deferReturn() (err error) { // want `func deferReturn #0: \[modified by \[deferReturn\$1\]\]`
+func deferReturn() (err error) { // want `func deferReturn #0: \[errors.New#0\("func b"\)\]`
 	defer func() {
 		err = errors.New("func b")
 	}()
 	return
 }
 
-func modifiedByLambda() error { // want `func modifiedByLambda #0: \[nilAndErrorsNew#0\(\) modified by \[modifiedByLambda\$1\]\]`
+func modifiedByLambda() error { // want `func modifiedByLambda #0: \[nilAndErrorsNew#0\(\) nilAndErrorsNew#1\(\)\]`
 	err1, err2 := nilAndErrorsNew()
 	func() {
 		err1 = err2

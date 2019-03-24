@@ -25,6 +25,7 @@ var Analyzer = &analysis.Analyzer{
 var errType *types.Interface
 var once sync.Once
 var chanPointerMap sync.Map
+var closureMap sync.Map
 var errMap sync.Map
 
 // Doc is ...
@@ -118,7 +119,6 @@ func getError(fset *token.FileSet, pkgName string, v ssa.Value) (ret Error) {
 
 			pointer := *val.Operands(nil)[0]
 			err := Pointer{}
-			mod := Modified{}
 			refs := pointer.Referrers()
 			if g, ok := pointer.(*ssa.Global); ok {
 				ret = &Global{Name: g.Name()}
@@ -130,7 +130,19 @@ func getError(fset *token.FileSet, pkgName string, v ssa.Value) (ret Error) {
 			}
 			for _, ref := range *refs {
 				if closure, ok := ref.(*ssa.MakeClosure); ok {
-					mod.Closures = append(mod.Closures, strings.TrimPrefix((*closure.Operands(nil)[0]).String(), pkgName))
+					p := pointer.(*ssa.Alloc)
+					makeclosure := (*closure.Operands(nil)[0]).(*ssa.Function)
+					for _, freev := range makeclosure.FreeVars {
+						if p.Comment != freev.Name() {
+							continue
+						}
+						for _, ref := range *freev.Referrers() {
+							if _, ok := ref.(*ssa.Store); !ok {
+								continue
+							}
+							err.Errors = append(err.Errors, getError(fset, pkgName, *ref.Operands(nil)[1]))
+						}
+					}
 				} else if store, ok := ref.(*ssa.Store); ok {
 					err.Errors = append(err.Errors, getError(fset, pkgName, *store.Operands(nil)[1]))
 				} else {
@@ -138,11 +150,29 @@ func getError(fset *token.FileSet, pkgName string, v ssa.Value) (ret Error) {
 						if _, ok := (*unop.Operands(nil)[0]).(*ssa.IndexAddr); ok {
 							ret = &MemoryAccess{}
 							return
+						} else if freevar, ok := (*unop.Operands(nil)[0]).(*ssa.FreeVar); ok {
+							pos := -1
+							for i, v := range freevar.Parent().FreeVars {
+								if freevar.Name() == v.Name() {
+									pos = i
+								}
+							}
+							interf, ok := closureMap.Load(freevar.Parent().Name())
+							if pos < 0 || !ok {
+								return &Unknown{}
+							}
+
+							closures := interf.([]*ssa.Value)
+
+							for _, ref := range *(*closures[pos + 1]).Referrers() {
+								if store, ok := ref.(*ssa.Store); ok {
+									err.Errors = append(err.Errors, getError(fset, pkgName, *store.Operands(nil)[1]))
+								}
+							}
 						}
 					}
 				}
 			}
-			err.Errors = append(err.Errors, &mod)
 			ret = &err
 			return
 		} else if val.Op == token.ARROW {
@@ -270,6 +300,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				for _, v := range ops {
 					vs = append(vs, *v)
 				}
+
+				if makeClosure, ok := inst.(*ssa.MakeClosure); ok {
+					closureMap.Store((*makeClosure.Operands(nil)[0]).(*ssa.Function).Name(), makeClosure.Operands(nil))
+				}
+
 				if rets, ok := inst.(*ssa.Return); ok && rets.Pos().IsValid() {
 					ferr.TupleSize = len(rets.Operands(nil))
 					for i, vp := range rets.Operands(nil) {
